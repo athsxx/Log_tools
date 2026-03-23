@@ -1,0 +1,135 @@
+"""Siemens NX (FlexLM/FlexNet) debug log parser.
+
+Expected input: one or more FlexLM-style license server debug logs that contain
+OUT/IN/DENIED events.
+
+Output schema (normalized):
+  - timestamp: str (original timestamp prefix)
+  - date: str (YYYY-MM-DD)
+  - time: str (HH:MM:SS)
+  - action: one of {OUT, IN, DENIED}
+  - feature: str
+  - user: str
+  - host: str (client host if present)
+  - server: str (license server host if present)
+  - raw: str (original line)
+
+Notes:
+  * Durations on IN lines vary by vendor; if found ("linger"/"duration"), we keep
+    it as `duration_seconds`.
+  * This parser is intentionally permissive; it focuses on accurate event extraction.
+"""
+
+from __future__ import annotations
+
+import re
+from datetime import date as _date
+from pathlib import Path
+from typing import Iterable, List
+
+import pandas as pd
+
+
+_TS_RE = re.compile(r"^(?P<dt>\d{4}-\d{2}-\d{2})\s+(?P<tm>\d{2}:\d{2}:\d{2})\b")
+
+# FlexLM debug logs often look like:
+#   16:35:25 (saltd) OUT: "FEATURE" user@HOST
+_TIME_ONLY_RE = re.compile(r"^(?P<tm>\d{1,2}:\d{2}:\d{2})\b")
+
+# And they set the date separately:
+#   (lmgrd) TIMESTAMP 9/15/2025
+_TIMESTAMP_DATE_RE = re.compile(r"\bTIMESTAMP\s+(?P<m>\d{1,2})/(?P<d>\d{1,2})/(?P<y>\d{4})\b")
+
+# Examples seen across FlexLM logs:
+#   OUT: "..." user@host (vX) (server/port ...)
+#   IN:  "..." user@host ...
+#   DENIED: "..." user@host (Licensed number of users already reached...)
+_EVENT_RE = re.compile(
+    r"\b(?P<action>OUT|IN|DENIED):\s+\"(?P<feature>[^\"]+)\"\s+"
+    r"(?P<user>[^\s@()]+)@(?P<host>[^\s()]+)"
+)
+
+_SERVER_RE = re.compile(r"\((?P<server>[^/\s()]+)/(?:\d+|\*)\b")
+
+_DUR_RE = re.compile(
+    r"\b(?:linger|duration)\s*=\s*(?P<secs>\d+)\b", re.IGNORECASE
+)
+
+
+def _iter_lines(files: Iterable[Path]) -> Iterable[tuple[Path, str]]:
+    for fp in files:
+        try:
+            with fp.open("r", errors="ignore") as f:
+                for line in f:
+                    yield fp, line.rstrip("\n")
+        except OSError:
+            continue
+
+
+def parse_files(files: List[Path]) -> pd.DataFrame:
+    rows: list[dict] = []
+
+    current_date: dict[str, str] = {}
+
+    for fp, line in _iter_lines(files):
+        m_day = _TIMESTAMP_DATE_RE.search(line)
+        if m_day:
+            try:
+                y = int(m_day.group("y"))
+                m = int(m_day.group("m"))
+                d = int(m_day.group("d"))
+                current_date[str(fp)] = _date(y, m, d).isoformat()
+            except ValueError:
+                pass
+
+        m_evt = _EVENT_RE.search(line)
+        if not m_evt:
+            continue
+
+        # Timestamp parsing: prefer full YYYY-MM-DD HH:MM:SS if present.
+        m_ts = _TS_RE.match(line)
+        if m_ts:
+            dt = m_ts.group("dt")
+            tm = m_ts.group("tm")
+        else:
+            dt = current_date.get(str(fp), "")
+            m_tm = _TIME_ONLY_RE.match(line)
+            tm = m_tm.group("tm") if m_tm else ""
+            # Normalize single-digit hour to HH
+            if tm and len(tm.split(":", 1)[0]) == 1:
+                tm = "0" + tm
+
+        date = dt
+        time = tm
+        if date and time:
+            timestamp = f"{date} {time}".strip()
+        elif date:
+            timestamp = date
+        elif time:
+            timestamp = time
+        else:
+            timestamp = ""
+
+        m_srv = _SERVER_RE.search(line)
+        server = m_srv.group("server") if m_srv else ""
+
+        m_dur = _DUR_RE.search(line)
+        dur = int(m_dur.group("secs")) if m_dur else None
+
+        rows.append(
+            {
+                "timestamp": timestamp,
+                "date": date,
+                "time": time,
+                "action": m_evt.group("action"),
+                "feature": (m_evt.group("feature") or "").strip(),
+                "user": m_evt.group("user"),
+                "host": m_evt.group("host"),
+                "server": server,
+                "duration_seconds": dur,
+                "source_file": str(fp),
+                "raw": line,
+            }
+        )
+
+    return pd.DataFrame(rows)
