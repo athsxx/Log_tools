@@ -248,6 +248,56 @@ def parse_files(files: List[Path]) -> pd.DataFrame:
         df["date"] = df["timestamp"].str.slice(0, 10)
         df["time"] = df["timestamp"].str.slice(11)
 
+    # Human-hours: session_minutes reconstructed from LICENSE_GRANT → LICENSE_RETURN
+    # (or TIMEOUT / DETACHMENT) per (user, host, feature).
+    try:
+        if all(c in df.columns for c in ["timestamp", "action"]):
+            df["_ts"] = pd.to_datetime(df["timestamp"], errors="coerce")
+            work = df[df["_ts"].notna()].copy()
+            if not work.empty:
+                # Normalize action strings
+                work["_act"] = work["action"].astype(str).str.upper()
+                out_values = {"LICENSE_GRANT"}
+                in_values = {"LICENSE_RETURN", "LICENSE_TIMEOUT", "LICENSE_DETACHMENT"}
+
+                sess_src = work[work["_act"].isin(out_values | in_values)].copy()
+                if not sess_src.empty:
+                    group_cols = [c for c in ["user", "host", "feature"] if c in sess_src.columns]
+                    sess_src = sess_src.sort_values("_ts")
+                    sess_min = pd.Series([pd.NA] * len(sess_src), index=sess_src.index, dtype="float")
+
+                    def _calc(g: pd.DataFrame) -> pd.Series:
+                        stack: list[pd.Timestamp] = []
+                        out = pd.Series([pd.NA] * len(g), index=g.index, dtype="float")
+                        for idx, r in g.iterrows():
+                            act = r.get("_act")
+                            ts = r.get("_ts")
+                            if act in out_values:
+                                stack.append(ts)
+                            elif act in in_values and stack:
+                                start = stack.pop(0)
+                                if pd.notna(start) and pd.notna(ts) and ts >= start:
+                                    out.loc[idx] = (ts - start).total_seconds() / 60.0
+                        return out
+
+                    if group_cols:
+                        for _, g in sess_src.groupby(group_cols, dropna=False):
+                            sess_min.loc[g.index] = _calc(g)
+                    else:
+                        sess_min.loc[sess_src.index] = _calc(sess_src)
+
+                    df["session_minutes"] = pd.to_numeric(sess_min.reindex(df.index), errors="coerce")
+                else:
+                    df["session_minutes"] = pd.NA
+            else:
+                df["session_minutes"] = pd.NA
+        else:
+            df["session_minutes"] = pd.NA
+    except Exception:
+        df["session_minutes"] = pd.NA
+    finally:
+        df = df.drop(columns=["_ts", "_act"], errors="ignore")
+
     # Event category: groups actions into higher-level buckets for pivots
     def _category(a) -> str:
         if not a or not isinstance(a, str):

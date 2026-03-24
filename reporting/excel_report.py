@@ -1694,8 +1694,9 @@ def _build_user_dashboard(non_empty: Dict[str, pd.DataFrame]) -> pd.DataFrame:
                            if hours_col and hours_col in data.columns
                            else 0.0,
             "Is_Deny": act.str.contains(r"DENIED|DENY|FAIL", na=False).astype(int).values,
-            "Is_In":   act.str.contains(r"^IN$|GRANT|CHECKOUT|DETACHMENT|TIMEOUT", na=False).astype(int).values,
-            "Is_Out":  act.str.contains(r"^OUT$|CHECKIN", na=False).astype(int).values,
+            # Normalize: OUT = checkout, IN = checkin. (Some parsers use GRANT/TIMEOUT naming.)
+            "Is_Out":  act.str.contains(r"^OUT$|LICENSE_GRANT|\bGRANT\b|\bCHECKOUT\b", na=False).astype(int).values,
+            "Is_In":   act.str.contains(r"^IN$|LICENSE_TIMEOUT|LICENSE_DETACHMENT|\bTIMEOUT\b|\bDETACHMENT\b|\bCHECKIN\b", na=False).astype(int).values,
         })
         return out
 
@@ -1797,7 +1798,7 @@ def _build_user_dashboard(non_empty: Dict[str, pd.DataFrame]) -> pd.DataFrame:
                 axis=1,
             )
 
-        # ── Estimate session hours from IN/OUT timestamp pairs ──
+    # ── Estimate session hours from OUT->IN timestamp pairs (human-hours) ──
         cdf["session_minutes"] = 0.0
         if "timestamp" in cdf.columns and "user" in cdf.columns:
             # Parse timestamps with the proper year from the date column
@@ -1809,16 +1810,16 @@ def _build_user_dashboard(non_empty: Dict[str, pd.DataFrame]) -> pd.DataFrame:
             sess_hrs: dict[tuple, float] = {}
             for usr, grp in io.groupby("user"):
                 acts = grp[["_ts", "action"]].values
-                last_in = None
+                last_out = None
                 for ts, act in acts:
-                    if act == "IN":
-                        last_in = ts
-                    elif act == "OUT" and last_in is not None:
-                        delta = (pd.Timestamp(ts) - pd.Timestamp(last_in)).total_seconds() / 3600.0
+                    if act == "OUT":
+                        last_out = ts
+                    elif act == "IN" and last_out is not None:
+                        delta = (pd.Timestamp(ts) - pd.Timestamp(last_out)).total_seconds() / 3600.0
                         if 0 < delta < 24:
-                            day_key = pd.Timestamp(last_in).strftime("%Y/%m/%d")
+                            day_key = pd.Timestamp(last_out).strftime("%Y/%m/%d")
                             sess_hrs[(usr, day_key)] = sess_hrs.get((usr, day_key), 0.0) + delta
-                        last_in = None
+                        last_out = None
             # Inject computed hours
             for (usr, day_str), hrs in sess_hrs.items():
                 mask = (cdf["user"] == usr) & (cdf["date"] == day_str)
@@ -2310,13 +2311,22 @@ def _build_user_hour_summary(dash_df: pd.DataFrame) -> pd.DataFrame:
                    Total_Checkouts=("Checkouts", "sum"),
                    Total_Denials=("Denials", "sum"),
                    Total_Hrs=("Daily Hrs", "sum"),
-                   Avg_Daily_Hrs=("Daily Hrs", "mean"),
                    Peak_Daily_Hrs=("Daily Hrs", "max"),
                    First_Seen=("Date", "min"),
                    Last_Seen=("Date", "max"),
                ).reset_index())
 
-    user_sw["Total_Hrs"] = user_sw["Total_Hrs"].round(1)
+    # Normalize numeric hours for Excel-friendly stable display.
+    user_sw["Total_Hrs"] = pd.to_numeric(user_sw["Total_Hrs"], errors="coerce").fillna(0).round(2)
+
+    # Human-hours definition: Avg Daily Hrs = Total Hrs / Active Days
+    user_sw["Avg_Daily_Hrs"] = (
+    (pd.to_numeric(user_sw["Total_Hrs"], errors="coerce")
+         / pd.to_numeric(user_sw["Active_Days"], errors="coerce").clip(lower=1))
+        .fillna(0)
+        .round(2)
+    )
+
     user_sw["Avg_Daily_Hrs"] = user_sw["Avg_Daily_Hrs"].round(2)
     user_sw["Peak_Daily_Hrs"] = user_sw["Peak_Daily_Hrs"].round(2)
     user_sw["Denial_Rate"] = (user_sw["Total_Denials"] / user_sw["Total_Events"] * 100).round(1).fillna(0)

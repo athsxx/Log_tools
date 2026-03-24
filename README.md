@@ -58,6 +58,41 @@ cd log_tool
 python3 gui_app.py
 ```
 
+### Windows (no-install / end-user friendly)
+
+For Windows users, use the launcher:
+
+* `log_tool/Run_LogReportGenerator_Windows.bat`
+
+It will try (in this order):
+
+1. **Packaged app (recommended)**: `dist\LogReportGenerator\LogReportGenerator.exe`
+2. **Portable Python fallback**: `portable_python\python.exe` + `log_tool\gui_app.py`
+
+#### Recommended Windows distribution (EXE)
+
+Build on a Windows PC:
+
+```bat
+cd log_tool
+build_windows.bat
+```
+
+Then share a zip containing:
+
+* `dist\LogReportGenerator\` (folder)
+* `log_tool\Run_LogReportGenerator_Windows.bat`
+
+End user runs the BAT by double-clicking it.
+
+#### Portable Python option
+
+If you prefer a portable python setup, place it at:
+
+* `portable_python\python.exe`
+
+and install the packages in `requirements.txt` (at minimum: `pandas`, `openpyxl`, `questionary`).
+
 In the GUI you can:
 * Select a *folder scan* (auto-detects log types)
 * Or manually select files for a single software type
@@ -151,4 +186,10 @@ If you want to go all-in for enterprise “clean” distribution, use:
 * **Report is missing users**: check the `Users (Raw)` sheet to confirm whether the source log contains those users.
 * **Some software has “utilisation” but no hours**: that vendor log doesn’t provide reliable session durations; the report will fall back to best available metrics.
 * **GUI won’t start from repository root**: run using `cd log_tool` first.
+
+## Sample logs for testing
+
+This repo includes a few **synthetic** sample logs under `sample_logs/` so you can quickly test parsing/report generation without using real customer logs.
+
+> These files are not real usage data.
 
