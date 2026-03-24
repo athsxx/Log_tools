@@ -39,35 +39,19 @@ echo.
 echo Building Windows executable...
 echo.
 
-REM 3. Run PyInstaller
-python -m PyInstaller ^
-    --noconfirm ^
-    --clean ^
-    --onefile ^
-    --windowed ^
-    --name "LogReportGenerator" ^
-    --add-data "parsers;parsers" ^
-    --add-data "reporting;reporting" ^
-    --hidden-import "parsers.ansys" ^
-    --hidden-import "parsers.ansys_peak" ^
-    --hidden-import "parsers.catia_license" ^
-    --hidden-import "parsers.catia_token" ^
-    --hidden-import "parsers.catia_usage_stats" ^
-    --hidden-import "parsers.cortona" ^
-    --hidden-import "parsers.cortona_admin" ^
-    --hidden-import "parsers.creo" ^
-    --hidden-import "parsers.matlab" ^
-    --hidden-import "parsers.base" ^
-    --hidden-import "reporting.excel_report" ^
-    --collect-all "openpyxl" ^
-    gui_app.py
+REM 3. Run PyInstaller using the checked-in .spec for consistency with macOS.
+REM    This keeps hidden imports and bundled data in sync as new parsers and
+REM    report modules are added.
+python -m PyInstaller --noconfirm --clean LogReportGenerator.spec
 
 echo.
 echo ═══════════════════════════════════════════════
 echo   BUILD COMPLETE
 echo ═══════════════════════════════════════════════
 echo.
-echo   Executable: dist\LogReportGenerator.exe
+echo   Output folder: dist\
+echo   - dist\LogReportGenerator\      (folder build)
+echo   - dist\LogReportGenerator.exe   (if spec is configured as onefile)
 echo.
 echo   To run: double-click dist\LogReportGenerator.exe
 echo   To distribute: copy the .exe to a shared folder.
