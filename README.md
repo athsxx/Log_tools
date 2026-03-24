@@ -127,6 +127,23 @@ cd log_tool
 build_windows.bat
 ```
 
+### Windows security / antivirus notes (recommended)
+
+Windows antivirus engines can sometimes flag **PyInstaller** outputs (especially **one-file** builds) even when the code is clean.
+
+To reduce false-positives:
+
+* Prefer an **onedir** build (a `dist\LogReportGenerator\` folder). This project’s `LogReportGenerator.windows.spec` is set up that way.
+* Keep **UPX disabled** (this project disables UPX in the Windows spec).
+* Build on a **clean, up-to-date** Windows machine.
+* Share the output as a **zip** of the `dist\LogReportGenerator\` folder.
+* Best option: **code-sign** the EXE with a trusted certificate (EV Code Signing if possible). Signed binaries are far less likely to be blocked.
+
+If you want to go all-in for enterprise “clean” distribution, use:
+
+* Code signing + timestamping
+* Optional notarized installer (MSI) with WiX/Inno Setup
+
 > Important: `dist/` and `build/` are generated output and are intentionally **not committed** to git.
 
 ## Troubleshooting

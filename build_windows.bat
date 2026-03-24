@@ -39,19 +39,22 @@ echo.
 echo Building Windows executable...
 echo.
 
-REM 3. Run PyInstaller using the checked-in .spec for consistency with macOS.
-REM    This keeps hidden imports and bundled data in sync as new parsers and
-REM    report modules are added.
-python -m PyInstaller --noconfirm --clean LogReportGenerator.spec
+REM 3. Run PyInstaller using the dedicated Windows spec.
+REM    NOTE: We intentionally build "onedir" on Windows because it typically
+REM    triggers fewer antivirus false-positives than --onefile.
+python -m PyInstaller --noconfirm --clean LogReportGenerator.windows.spec
 
 echo.
 echo ═══════════════════════════════════════════════
 echo   BUILD COMPLETE
 echo ═══════════════════════════════════════════════
 echo.
-echo   Output folder: dist\
-echo   - dist\LogReportGenerator\      (folder build)
-echo   - dist\LogReportGenerator.exe   (if spec is configured as onefile)
+echo   Output:
+echo   - dist\LogReportGenerator\LogReportGenerator.exe
+echo.
+echo   AV note:
+echo   - If Windows Defender/AV blocks the file, prefer code signing (see README)
+echo   - Avoid repacking with UPX (already disabled in the Windows spec)
 echo.
 echo   To run: double-click dist\LogReportGenerator.exe
 echo   To distribute: copy the .exe to a shared folder.
