@@ -11,7 +11,10 @@ cd /d "%SCRIPT_DIR%"
 
 REM Find Python (System Python or Virtual Environment)
 set PYTHON_EXE=python
-if exist "..\.venv\Scripts\python.exe" (
+if exist "portable_python\python.exe" (
+    set PYTHON_EXE="portable_python\python.exe"
+    echo [INFO] Using packaged Portable Python engine.
+) else if exist "..\.venv\Scripts\python.exe" (
     set PYTHON_EXE="..\.venv\Scripts\python.exe"
     echo [INFO] Using virtual environment python.
 ) else if exist ".venv\Scripts\python.exe" (

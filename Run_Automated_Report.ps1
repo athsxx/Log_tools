@@ -22,7 +22,10 @@ Set-Location -Path $ScriptDir
 
 # Resolve python executable natively
 $PythonExe = "python"
-if (Test-Path "..\.venv\Scripts\python.exe") {
+if (Test-Path "portable_python\python.exe") {
+    $PythonExe = "portable_python\python.exe"
+    Write-Host "[INFO] Using packaged Portable Python engine." -ForegroundColor DarkGray
+} elseif (Test-Path "..\.venv\Scripts\python.exe") {
     $PythonExe = "..\.venv\Scripts\python.exe"
     Write-Host "[INFO] Using virtual environment python." -ForegroundColor DarkGray
 } elseif (Test-Path ".venv\Scripts\python.exe") {

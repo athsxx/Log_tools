@@ -13,3 +13,4 @@ build/
 dist/
 
 # Distribution bundles are handled by repo root .gitignore
+portable_python/
