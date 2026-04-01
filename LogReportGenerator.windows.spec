@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""Windows build spec for LogReportGenerator.
+r"""Windows build spec for LogReportGenerator.
 
 Why a separate spec?
 - Windows AV engines are more likely to flag PyInstaller --onefile builds.
@@ -39,11 +39,23 @@ hiddenimports = [
     'reporting.critical_summary',
 ]
 
-# openpyxl has dynamic imports and template files.
-tmp_ret = collect_all('openpyxl')
-datas += tmp_ret[0]
-binaries += tmp_ret[1]
-hiddenimports += tmp_ret[2]
+# openpyxl has dynamic imports and data files.
+_opx_datas, _opx_binaries, _opx_hidden = collect_all('openpyxl')
+datas += _opx_datas
+binaries += _opx_binaries
+hiddenimports += _opx_hidden
+
+# Hard-exclude common heavy ML stacks that PyInstaller may try to analyze if
+# they are installed in the builder's global site-packages (e.g. torch).
+# This tool doesn't need them; excluding keeps the build small and avoids noisy warnings.
+excludes = [
+  'torch',
+  'torchvision',
+  'tensorflow',
+  'tensorboard',
+  'jax',
+  'jaxlib',
+]
 
 
 a = Analysis(
@@ -55,7 +67,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+  excludes=excludes,
     noarchive=False,
     optimize=0,
 )

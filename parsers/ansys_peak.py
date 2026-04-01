@@ -47,15 +47,21 @@ def parse_files(files: List[Path]) -> pd.DataFrame:
 
         # Separate day columns, month summary columns, Average, Total Count
         # Also build a mapping: day_col → real date string (YYYY-MM-DD)
-        day_cols = []
-        month_cols = []
-        meta_cols = []
+        day_cols: list[str] = []
+        month_cols: list[str] = []
+        meta_cols: list[str] = []
 
         # First pass: find which columns are months vs days vs meta
-        col_types = {}  # col -> "day" | "month" | "meta"
+        col_types: dict[str, str] = {}  # col -> "day" | "month" | "meta"
         for col in raw.columns[1:]:
-            col_stripped = col.strip()
-            if re.match(r"^[A-Za-z]{3}-\d{2}$", col_stripped):
+            col_stripped = str(col).strip()
+
+            # Month columns appear in at least two common formats:
+            #   - "Feb-25" (legacy)
+            #   - "Feb 2025" (seen in your Peak_All_All.csv)
+            if re.match(r"^[A-Za-z]{3}-\d{2}$", col_stripped) or re.match(
+                r"^[A-Za-z]{3}\s+\d{4}$", col_stripped
+            ):
                 col_types[col] = "month"
                 month_cols.append(col)
             elif col_stripped.lower() in ("average", "total count"):
@@ -67,21 +73,23 @@ def parse_files(files: List[Path]) -> pd.DataFrame:
 
         # Second pass: map each day column to its month by scanning
         # columns left-to-right; the month label follows its day columns.
-        # E.g. Mon 10, Tue 11, ..., Feb-25, Sat 01, ..., Mar-25
+        # E.g. Mon 10, Tue 11, ..., Feb 2025, Sat 01, ..., Mar 2025
         # So we scan *backwards*: for each day col, its month is the
         # next month-label column to the right.
-        day_to_date = {}
+        day_to_date: dict[str, str] = {}
         all_cols = list(raw.columns[1:])
+
         # Build ordered list of month boundaries
-        month_positions = []  # (position_in_all_cols, month_label)
+        month_positions: list[tuple[int, str]] = []  # (pos_in_all_cols, month_label)
         for i, col in enumerate(all_cols):
             if col_types.get(col) == "month":
-                month_positions.append((i, col.strip()))
+                month_positions.append((i, str(col).strip()))
 
         # For each day column, find which month it belongs to
         for i, col in enumerate(all_cols):
             if col_types.get(col) != "day":
                 continue
+
             # Find next month label to the right
             assigned_month = None
             for mpos, mlabel in month_positions:
@@ -91,18 +99,29 @@ def parse_files(files: List[Path]) -> pd.DataFrame:
             if assigned_month is None and month_positions:
                 assigned_month = month_positions[-1][1]  # last month
 
-            if assigned_month:
-                # Extract day number from "Mon 10", "Tue 11", etc.
-                day_match = re.search(r"(\d+)", col.strip())
-                if day_match:
-                    day_num = int(day_match.group(1))
-                    # Parse month: "Feb-25" -> 2025-02
-                    try:
-                        month_dt = pd.to_datetime(assigned_month, format="%b-%y")
-                        real_date = f"{month_dt.year}-{month_dt.month:02d}-{day_num:02d}"
-                        day_to_date[col] = real_date
-                    except Exception:
-                        pass
+            if not assigned_month:
+                continue
+
+            # Extract day number from "Mon 10", "Tue 11", etc.
+            # NOTE: pandas may auto-disambiguate duplicate headers by appending
+            # ".1", ".2" etc (e.g. "Mon 10.1"). We only need the digits.
+            day_match = re.search(r"(\d+)", str(col).strip())
+            if not day_match:
+                continue
+            day_num = int(day_match.group(1))
+
+            # Parse month:
+            #  - "Feb-25"   -> 2025-02
+            #  - "Feb 2025" -> 2025-02
+            try:
+                if "-" in assigned_month:
+                    month_dt = pd.to_datetime(assigned_month, format="%b-%y")
+                else:
+                    month_dt = pd.to_datetime(assigned_month, format="%b %Y")
+                real_date = f"{month_dt.year}-{month_dt.month:02d}-{day_num:02d}"
+                day_to_date[col] = real_date
+            except Exception:
+                continue
 
         # Build tidy day-level data with real dates
         if day_cols:

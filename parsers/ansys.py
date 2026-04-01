@@ -76,28 +76,56 @@ def _parse_flexnet_out_in(details: str) -> Optional[dict]:
     """
     import re
 
-    # Use the explicit date/time at the end of the record (more reliable than the prefix).
+    # Match IN/OUT lines with various formats
+    # E.g. (ansyslmd) OUT: "ansys" user1@hostA  (v1.0) (pid 2001)
+    # E.g. (ansyslmd) OUT: "ansys" user@host [18272] ^^^ ... 27-2-2026 12:44:15 ...
     pat = re.compile(
-        r'\b(?P<action>OUT|IN):\s*"(?P<feature>[^"]+)"\s+'
-        r'(?P<user>[^@\s]+)@(?P<host>[^\s]+)\s+\[(?P<pid>\d+)\]'
-        r'.*?\s(?P<d>\d{1,2})-(?P<m>\d{1,2})-(?P<y>\d{4})\s+(?P<t>\d{1,2}:\d{1,2}:\d{1,2})\b'
+        r'\b(?P<action>OUT|IN|DENIED):\s*"(?P<feature>[^"]+)"\s+'
+        r'(?P<user>[^@\s]+)@(?P<host>[^\s]+)\s+.*?\[?(?:pid\s+)?(?P<pid>\d+)\]?'
     )
 
     m = pat.search(details)
     if not m:
-        return None
+        # Check without PID (sometimes DENIED might omit PID)
+        pat_no_pid = re.compile(
+            r'\b(?P<action>OUT|IN|DENIED):\s*"(?P<feature>[^"]+)"\s+'
+            r'(?P<user>[^@\s]+)@(?P<host>[^\s]+)'
+        )
+        m = pat_no_pid.search(details)
+        if not m:
+            return None
 
-    y, mo, d = int(m.group("y")), int(m.group("m")), int(m.group("d"))
-    # Normalize time components (some logs have single-digit fields)
-    hh, mm, ss = (int(x) for x in m.group("t").split(":"))
-    end_ts = f"{y:04d}-{mo:02d}-{d:02d} {hh:02d}:{mm:02d}:{ss:02d}"
+    pid = None
+    if 'pid' in m.groupdict() and m.group('pid'):
+        pid = int(m.group("pid"))
+
+    # check if there is an explicit date/time at the end of the line
+    pat_date = re.compile(r'\s(?P<d>\d{1,2})-(?P<m>\d{1,2})-(?P<y>\d{4})\s+(?P<t>\d{1,2}:\d{1,2}:\d{1,2})\b')
+    m_date = pat_date.search(details)
+    end_ts = None
+    if m_date:
+        y, mo, d = int(m_date.group("y")), int(m_date.group("m")), int(m_date.group("d"))
+        hh, mm, ss = (int(x) for x in m_date.group("t").split(":"))
+        end_ts = f"{y:04d}-{mo:02d}-{d:02d} {hh:02d}:{mm:02d}:{ss:02d}"
+
+    action_val = m.group("action")
+    if action_val == "DENIED" and pid is not None:
+        # For DENIED actions, ensure PID is included in the result
+        return {
+            "action": action_val,
+            "feature": m.group("feature"),
+            "user": m.group("user"),
+            "host": m.group("host"),
+            "pid": pid,
+            "timestamp": end_ts,
+        }
 
     return {
-        "action": m.group("action"),
+        "action": action_val,
         "feature": m.group("feature"),
         "user": m.group("user"),
         "host": m.group("host"),
-        "pid": int(m.group("pid")),
+        "pid": pid,
         "timestamp": end_ts,
     }
 
@@ -195,6 +223,8 @@ def parse_files(files: List[Path]) -> pd.DataFrame:
         pid = None
         if out_in:
             action = out_in["action"]
+            if action == "DENIED":
+                action = "OTHER" # Mapping DENIED temporarily to OTHER if the system needs it or leave as DENIED
             feature = out_in["feature"]
             user = out_in["user"]
             current_host = out_in.get("host") or current_host

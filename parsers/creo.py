@@ -1,11 +1,90 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List
+from typing import List, Optional
+
+import re
 
 import pandas as pd
 
 from .base import LogRecord, iter_text_files
+
+
+# FlexLM-style events (common in PTC/FlexNet debug logs)
+_EVENT_RE = re.compile(
+    r"\b(?P<action>OUT|IN|DENIED):\s+\"(?P<feature>[^\"]+)\"\s+(?P<user>[^\s@]+)@(?P<host>[^\s]+)",
+    re.IGNORECASE,
+)
+
+_TIME_ONLY_RE = re.compile(r"^(?P<tm>\d{1,2}:\d{2}:\d{2})\b")
+_TIMESTAMP_DATE_RE = re.compile(r"\bTIMESTAMP\s+(?P<m>\d{1,2})/(?P<d>\d{1,2})/(?P<y>\d{4})\b")
+
+
+def _normalize_time(t: str) -> str:
+    if not t:
+        return t
+    hh, rest = t.split(":", 1)
+    return ("0" + hh if len(hh) == 1 else hh) + ":" + rest
+
+
+def _try_parse_flexlm_events(files: List[Path]) -> Optional[pd.DataFrame]:
+    """Parse FlexLM OUT/IN/DENIED from text debug logs.
+
+    Returns a DataFrame when any matching events are found, otherwise None.
+    """
+
+    rows: list[dict] = []
+    current_date_by_file: dict[str, str] = {}
+
+    for fp, raw_line in iter_text_files(files):
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        m_day = _TIMESTAMP_DATE_RE.search(line)
+        if m_day:
+            try:
+                y = int(m_day.group("y"))
+                m = int(m_day.group("m"))
+                d = int(m_day.group("d"))
+                current_date_by_file[str(fp)] = f"{y:04d}-{m:02d}-{d:02d}"
+            except ValueError:
+                pass
+
+        m_evt = _EVENT_RE.search(line)
+        if not m_evt:
+            continue
+
+        # timestamp: best-effort: time-of-day + current date hint
+        t_only = ""
+        m_tm = _TIME_ONLY_RE.match(line)
+        if m_tm:
+            t_only = _normalize_time(m_tm.group("tm"))
+        dt = current_date_by_file.get(str(fp), "")
+
+        timestamp = (dt + " " + t_only).strip() if (dt or t_only) else ""
+
+        action = m_evt.group("action").upper()
+        rows.append(
+            {
+                "timestamp": timestamp or None,
+                "product": "Creo",
+                "log_type": "license_debug",
+                "user": m_evt.group("user"),
+                "host": m_evt.group("host"),
+                "feature": (m_evt.group("feature") or "").strip(),
+                "action": action,
+                "count": None,
+                "details": line,
+                "source_file": str(fp),
+                "date": dt or None,
+                "time": t_only or None,
+            }
+        )
+
+    if not rows:
+        return None
+    return pd.DataFrame(rows)
 
 
 def parse_files(files: List[Path]) -> pd.DataFrame:
@@ -55,7 +134,13 @@ def parse_files(files: List[Path]) -> pd.DataFrame:
                 frames.append(df_csv)
 
         elif suffix in (".log", ".txt", ".bat"):
-            # Text-based fallback: read raw lines
+            # Text-based logs: first try structured FlexLM OUT/IN/DENIED extraction.
+            flex_df = _try_parse_flexlm_events([path])
+            if flex_df is not None and not flex_df.empty:
+                frames.append(flex_df)
+                continue
+
+            # Fallback: store raw lines.
             try:
                 with path.open("r", encoding="utf-8", errors="ignore") as f:
                     for line in f:

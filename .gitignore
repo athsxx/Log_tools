@@ -12,5 +12,4 @@ __pycache__/
 build/
 dist/
 
-# Local distribution bundles
-*.zip
+# Distribution bundles are handled by repo root .gitignore

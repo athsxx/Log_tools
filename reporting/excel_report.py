@@ -82,23 +82,34 @@ def _window_avgs(dates: pd.Series, values: pd.Series) -> dict:
     if dates is None or values is None or len(values) == 0:
         return base
 
-    dt_full = pd.to_datetime(dates, errors="coerce")
-    mask_ok = dt_full.notna() & (dt_full.dt.year >= 1900)
-    if not mask_ok.any():
+    df = pd.DataFrame({
+        "date": pd.to_datetime(dates, errors="coerce"),
+        "value": pd.to_numeric(values, errors="coerce").fillna(0.0)
+    })
+    df = df.dropna(subset=["date"])
+    df = df[df["date"].dt.year >= 1900]
+    if df.empty:
         return base
 
-    dt = dt_full[mask_ok]
-    vals = pd.to_numeric(values[mask_ok], errors="coerce")
-    vals = vals.fillna(0.0)
-
-    # Full-period mean across all valid records
-    base["Full Period"] = float(vals.mean()) if len(vals) else 0.0
-
-    # Month-bucket means, then rolling across last N months
-    month = dt.dt.to_period("M")
-    by_month = pd.DataFrame({"month": month.astype(str), "value": vals}).groupby("month")[["value"]].mean().reset_index()
-    if by_month.empty:
+    # Create distinct daily series to safely insert zero-days
+    daily = df.groupby(df["date"].dt.date)["value"].sum()
+    if daily.empty:
         return base
+        
+    d_min, d_max = daily.index.min(), daily.index.max()
+    full_idx = pd.date_range(start=d_min, end=d_max, freq='D').date
+    daily = daily.reindex(full_idx, fill_value=0.0)
+
+    # Full period mean across ALL calendar days
+    base["Full Period"] = float(daily.mean()) if not daily.empty else 0.0
+
+    # Monthly rolling averages computation
+    df_daily = daily.reset_index()
+    df_daily.columns = ["date", "value"]
+    df_daily["month"] = pd.to_datetime(df_daily["date"]).dt.to_period("M").astype(str)
+    
+    # Calculate average daily utilization *per calendar month*
+    by_month = df_daily.groupby("month")["value"].mean().reset_index()
 
     # Ensure chronological ordering
     by_month["month_dt"] = pd.to_datetime(by_month["month"] + "-01", errors="coerce")
@@ -550,7 +561,6 @@ def _analyse_ansys_peak(df: pd.DataFrame) -> List[dict]:
             days_idle = n_days - days_used
             avg_when_used = float(vals[vals > 0].mean()) if days_used > 0 else 0.0
             peak_val = float(vals.max()) if n_days > 0 else 0.0
-            overall_avg = float(vals.mean()) if n_days > 0 else 0.0
 
             # Date range
             if not valid_dates.empty:
@@ -561,6 +571,8 @@ def _analyse_ansys_peak(df: pd.DataFrame) -> List[dict]:
                 span_days = n_days
                 date_range = "N/A"
 
+            overall_avg = float(vals.sum() / span_days) if span_days > 0 else 0.0
+
             usage_rows.append({
                 "Product": product,
                 "Date Range": date_range,
@@ -568,7 +580,7 @@ def _analyse_ansys_peak(df: pd.DataFrame) -> List[dict]:
                 "Days With Data": n_days,
                 "Days In Use": days_used,
                 "Days Idle": days_idle,
-                "Utilisation Rate": f"{days_used / n_days * 100:.1f}%" if n_days else "0%",
+                "Utilisation Rate": f"{days_used / span_days * 100:.1f}%" if span_days else "0%",
                 "Avg Peak (when used)": f"{avg_when_used * 100:.1f}%",
                 "Max Peak": f"{peak_val * 100:.0f}%",
                 "Overall Avg": f"{overall_avg * 100:.1f}%",
@@ -584,12 +596,12 @@ def _analyse_ansys_peak(df: pd.DataFrame) -> List[dict]:
 
 def _analyse_ansys_lm(df: pd.DataFrame) -> List[dict]:
     """Analyse Ansys License Manager admin log."""
-    if df.empty:
+    if df.empty or "action" not in df.columns:
         return []
 
     work = df.copy()
     if "date" not in work.columns:
-        work["date"] = work.get("timestamp", "").astype(str).str[:10]
+        work["date"] = work.get("timestamp", pd.Series(dtype=str)).astype(str).str[:10]
 
     grp = work.groupby("date", dropna=False)
     overview = grp.agg(
@@ -1694,9 +1706,8 @@ def _build_user_dashboard(non_empty: Dict[str, pd.DataFrame]) -> pd.DataFrame:
                            if hours_col and hours_col in data.columns
                            else 0.0,
             "Is_Deny": act.str.contains(r"DENIED|DENY|FAIL", na=False).astype(int).values,
-            # Normalize: OUT = checkout, IN = checkin. (Some parsers use GRANT/TIMEOUT naming.)
-            "Is_Out":  act.str.contains(r"^OUT$|LICENSE_GRANT|\bGRANT\b|\bCHECKOUT\b", na=False).astype(int).values,
-            "Is_In":   act.str.contains(r"^IN$|LICENSE_TIMEOUT|LICENSE_DETACHMENT|\bTIMEOUT\b|\bDETACHMENT\b|\bCHECKIN\b", na=False).astype(int).values,
+            "Is_In":   act.str.contains(r"^IN$|GRANT|CHECKOUT|DETACHMENT|TIMEOUT", na=False).astype(int).values,
+            "Is_Out":  act.str.contains(r"^OUT$|CHECKIN", na=False).astype(int).values,
         })
         return out
 
@@ -1798,7 +1809,7 @@ def _build_user_dashboard(non_empty: Dict[str, pd.DataFrame]) -> pd.DataFrame:
                 axis=1,
             )
 
-    # ── Estimate session hours from OUT->IN timestamp pairs (human-hours) ──
+        # ── Estimate session hours from IN/OUT timestamp pairs ──
         cdf["session_minutes"] = 0.0
         if "timestamp" in cdf.columns and "user" in cdf.columns:
             # Parse timestamps with the proper year from the date column
@@ -1810,16 +1821,16 @@ def _build_user_dashboard(non_empty: Dict[str, pd.DataFrame]) -> pd.DataFrame:
             sess_hrs: dict[tuple, float] = {}
             for usr, grp in io.groupby("user"):
                 acts = grp[["_ts", "action"]].values
-                last_out = None
+                last_in = None
                 for ts, act in acts:
-                    if act == "OUT":
-                        last_out = ts
-                    elif act == "IN" and last_out is not None:
-                        delta = (pd.Timestamp(ts) - pd.Timestamp(last_out)).total_seconds() / 3600.0
+                    if act == "IN":
+                        last_in = ts
+                    elif act == "OUT" and last_in is not None:
+                        delta = (pd.Timestamp(ts) - pd.Timestamp(last_in)).total_seconds() / 3600.0
                         if 0 < delta < 24:
-                            day_key = pd.Timestamp(last_out).strftime("%Y/%m/%d")
+                            day_key = pd.Timestamp(last_in).strftime("%Y/%m/%d")
                             sess_hrs[(usr, day_key)] = sess_hrs.get((usr, day_key), 0.0) + delta
-                        last_out = None
+                        last_in = None
             # Inject computed hours
             for (usr, day_str), hrs in sess_hrs.items():
                 mask = (cdf["user"] == usr) & (cdf["date"] == day_str)
@@ -2000,11 +2011,14 @@ def _build_software_summary(dash_df: pd.DataFrame) -> pd.DataFrame:
         total_checkouts = int(s["Checkouts"].sum())
         total_denials = int(s["Denials"].sum())
         total_hrs = round(s["Daily Hrs"].sum(), 1)
-        avg_daily = round(s["Daily Hrs"].mean(), 2) if total_hrs > 0 else 0.0
-        peak_daily = round(s["Daily Hrs"].max(), 2) if total_hrs > 0 else 0.0
+        
+        dt_min = pd.to_datetime(s["Date"]).min()
+        dt_max = pd.to_datetime(s["Date"]).max()
+        calendar_days = (dt_max - dt_min).days + 1 if pd.notna(dt_min) else 1
+        
+        avg_daily = round(total_hrs / calendar_days, 2) if calendar_days > 0 else 0.0
+        peak_daily = round(s["Daily Hrs"].groupby(s["Date"]).sum().max(), 2) if total_hrs > 0 else 0.0
         denial_rate = round(total_denials / total_events * 100, 1) if total_events else 0.0
-        dt_min = s["Date"].min()
-        dt_max = s["Date"].max()
 
         rows.append({
             "Software": sw,
@@ -2311,22 +2325,13 @@ def _build_user_hour_summary(dash_df: pd.DataFrame) -> pd.DataFrame:
                    Total_Checkouts=("Checkouts", "sum"),
                    Total_Denials=("Denials", "sum"),
                    Total_Hrs=("Daily Hrs", "sum"),
+                   Avg_Daily_Hrs=("Daily Hrs", "mean"),
                    Peak_Daily_Hrs=("Daily Hrs", "max"),
                    First_Seen=("Date", "min"),
                    Last_Seen=("Date", "max"),
                ).reset_index())
 
-    # Normalize numeric hours for Excel-friendly stable display.
-    user_sw["Total_Hrs"] = pd.to_numeric(user_sw["Total_Hrs"], errors="coerce").fillna(0).round(2)
-
-    # Human-hours definition: Avg Daily Hrs = Total Hrs / Active Days
-    user_sw["Avg_Daily_Hrs"] = (
-    (pd.to_numeric(user_sw["Total_Hrs"], errors="coerce")
-         / pd.to_numeric(user_sw["Active_Days"], errors="coerce").clip(lower=1))
-        .fillna(0)
-        .round(2)
-    )
-
+    user_sw["Total_Hrs"] = user_sw["Total_Hrs"].round(1)
     user_sw["Avg_Daily_Hrs"] = user_sw["Avg_Daily_Hrs"].round(2)
     user_sw["Peak_Daily_Hrs"] = user_sw["Peak_Daily_Hrs"].round(2)
     user_sw["Denial_Rate"] = (user_sw["Total_Denials"] / user_sw["Total_Events"] * 100).round(1).fillna(0)

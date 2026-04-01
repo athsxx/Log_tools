@@ -157,7 +157,10 @@ def parse_files(files: List[Path]) -> pd.DataFrame:
     try:
         if "date" in df.columns and "time" in df.columns:
             dt_str = (df["date"].fillna("").astype(str).str.strip() + " " + df["time"].fillna("").astype(str).str.strip()).str.strip()
-            df["_ts"] = pd.to_datetime(dt_str, errors="coerce")
+            # Common FlexLM format: YYYY-MM-DD HH:MM:SS
+            df["_ts"] = pd.to_datetime(dt_str, format="%Y-%m-%d %H:%M:%S", errors="coerce")
+            if df["_ts"].isna().all():
+                df["_ts"] = pd.to_datetime(dt_str, errors="coerce")
         else:
             df["_ts"] = pd.to_datetime(df["timestamp"], errors="coerce")
 
@@ -176,19 +179,19 @@ def parse_files(files: List[Path]) -> pd.DataFrame:
             work["session_minutes"] = pd.NA
 
             def _pair(g: pd.DataFrame) -> pd.DataFrame:
-                stack: list[pd.Timestamp] = []
+                stack: list[tuple[pd.Timestamp, int]] = []
                 out = g.copy()
                 for idx, r in out.iterrows():
                     if r["action"] == "OUT":
-                        stack.append(r["_ts"])
+                        stack.append((r["_ts"], idx))
                     elif r["action"] == "IN" and stack:
-                        start = stack.pop(0)
+                        start, start_idx = stack.pop(0)
                         end = r["_ts"]
                         if pd.notna(start) and pd.notna(end) and end >= start:
                             # Human-hours invariant: pairing across different calendar days in FlexLM debug
                             # logs often indicates a missing IN or log reset; don't create multi-day sessions.
                             if start.date() == end.date():
-                                out.at[idx, "session_minutes"] = (end - start).total_seconds() / 60.0
+                                out.at[start_idx, "session_minutes"] = (end - start).total_seconds() / 60.0
                 return out
 
             if group_cols:

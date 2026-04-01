@@ -64,18 +64,22 @@ def _parse_license_denial(line: str) -> tuple[Optional[str], Optional[str], Opti
     return feature, user, host
 
 
-def _parse_usgtracing(line: str) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
+def _parse_usgtracing(
+    line: str,
+) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str], Optional[str], Optional[str]]:
     """Parse USGTRACING lines for Grant / TimeOut / Detachment events.
 
     Format after ``USGTRACING``:
         ``Action!!Feature!LicID!Product!LicType!Count!Pool!Computer (HW)!IP!username!UPN!exe!ver!flag``
 
-    Returns (action, feature, user, host).
+    Returns (action, feature, user, host, lic_id, computer_id).
     """
     action = None
     feature = None
     user = None
     host = None
+    lic_id = None
+    computer_id = None
 
     try:
         payload = line.split("USGTRACING", 1)[1].strip()
@@ -85,17 +89,37 @@ def _parse_usgtracing(line: str) -> tuple[Optional[str], Optional[str], Optional
 
         action = parts[0].strip()  # Grant / TimeOut / Detachment
         fields = parts[1].split("!")
+        # Fields (observed):
+        #   0 Feature
+        #   1 LicID
+        #   2 Product
+        #   3 LicType
+        #   4 Count
+        #   5 Pool
+        #   6 Computer (HW)
+        #   7 IP
+        #   8 username
+        #   9 UPN
         if len(fields) > 0:
-            feature = fields[0]
+            feature = fields[0] or None
+        if len(fields) > 1:
+            lic_id = fields[1] or None
         if len(fields) > 6:
-            # Computer field: "4BWK24J0002 (41A5...)"
-            host = fields[6].split(" ", 1)[0] if fields[6] else None
+            # Computer field: "4BWK24I0001 (43DD...-ac189...)"
+            comp = fields[6] or ""
+            host = comp.split(" ", 1)[0] if comp else None
+            # Also capture the computer_id / hwid between parentheses when present
+            if "(" in comp and ")" in comp:
+                try:
+                    computer_id = comp.split("(", 1)[1].split(")", 1)[0].strip() or None
+                except Exception:
+                    computer_id = None
         if len(fields) > 8:
             user = fields[8] or None
     except Exception:
         pass
 
-    return action, feature, user, host
+    return action, feature, user, host, lic_id, computer_id
 
 
 _USER_AT_HOST_RE = re.compile(r"\b(?P<user>[A-Za-z0-9._-]+)@(?P<host>[A-Za-z0-9._-]+)\b")
@@ -167,10 +191,12 @@ def parse_files(files: List[Path]) -> pd.DataFrame:
         feature: Optional[str] = None
         user: Optional[str] = None
         host: Optional[str] = None
+        lic_id: Optional[str] = None
+        computer_id: Optional[str] = None
 
         # Core patterns
         if " USGTRACING " in line:
-            action, feature, user, host = _parse_usgtracing(line)
+            action, feature, user, host, lic_id, computer_id = _parse_usgtracing(line)
             # Normalise to standard action names
             if action:
                 action = {
@@ -178,7 +204,10 @@ def parse_files(files: List[Path]) -> pd.DataFrame:
                     "TimeOut": "LICENSE_TIMEOUT",
                     "Detachment": "LICENSE_DETACHMENT",
                 }.get(action, action)
-        elif " LICENSESERV " in line and "not granted, no more available license" in line:
+
+        elif " LICENSESERV " in line and "not granted" in line.lower() and (
+            "no more available license" in line.lower() or "no license enrolled" in line.lower()
+        ):
             action = "LICENSE_DENIED"
             feature, user, host = _parse_license_denial(line)
         # Best-effort: other LICENSESERV lines often include user@host and indicate checkouts/returns.
@@ -238,46 +267,75 @@ def parse_files(files: List[Path]) -> pd.DataFrame:
             )
         )
 
+        # Attach extra fields for session pairing (best-effort)
+        # IMPORTANT: LogRecord is likely a dataclass/typed class; adding dynamic fields via
+        # __dict__ can be lost if the class uses __slots__. We still try, but we also
+        # re-attach after DataFrame creation below.
+        try:
+            if lic_id is not None:
+                records[-1].__dict__["lic_id"] = lic_id
+            if computer_id is not None:
+                records[-1].__dict__["computer_id"] = computer_id
+        except Exception:
+            pass
+
     if not records:
         return pd.DataFrame()
 
     df = pd.DataFrame([r.__dict__ for r in records])
+
+    # Re-attach dynamic fields if LogRecord didn't keep them (e.g., __slots__)
+    if "lic_id" not in df.columns:
+        df["lic_id"] = [getattr(r, "lic_id", None) for r in records]
+    if "computer_id" not in df.columns:
+        df["computer_id"] = [getattr(r, "computer_id", None) for r in records]
 
     # Derive helper columns for analysis in Excel
     if "timestamp" in df.columns:
         df["date"] = df["timestamp"].str.slice(0, 10)
         df["time"] = df["timestamp"].str.slice(11)
 
-    # Human-hours: session_minutes reconstructed from LICENSE_GRANT → LICENSE_RETURN
-    # (or TIMEOUT / DETACHMENT) per (user, host, feature).
+    # Human-hours: session_minutes reconstructed from LICENSE_GRANT → (TIMEOUT / DETACHMENT)
+    # Prefer pairing by lic_id when present (stable key in USGTRACING payload).
     try:
         if all(c in df.columns for c in ["timestamp", "action"]):
-            df["_ts"] = pd.to_datetime(df["timestamp"], errors="coerce")
+            # Timestamp is stable: YYYY/MM/DD HH:MM:SS:ms
+            df["_ts"] = pd.to_datetime(df["timestamp"], format="%Y/%m/%d %H:%M:%S:%f", errors="coerce")
             work = df[df["_ts"].notna()].copy()
             if not work.empty:
-                # Normalize action strings
-                work["_act"] = work["action"].astype(str).str.upper()
+                # Normalize action strings; keep nulls as nulls.
+                work["_act"] = work["action"].astype("string").str.upper()
                 out_values = {"LICENSE_GRANT"}
                 in_values = {"LICENSE_RETURN", "LICENSE_TIMEOUT", "LICENSE_DETACHMENT"}
 
                 sess_src = work[work["_act"].isin(out_values | in_values)].copy()
                 if not sess_src.empty:
-                    group_cols = [c for c in ["user", "host", "feature"] if c in sess_src.columns]
+                    # Pair on lic_id when available; fallback to (user, host, feature)
+                    if "lic_id" in sess_src.columns and sess_src["lic_id"].notna().any():
+                        group_cols = ["lic_id"]
+                    else:
+                        group_cols = [c for c in ["user", "host", "feature"] if c in sess_src.columns]
                     sess_src = sess_src.sort_values("_ts")
-                    sess_min = pd.Series([pd.NA] * len(sess_src), index=sess_src.index, dtype="float")
+                    # We'll write minutes back to the OUT (grant) rows.
+                    # IMPORTANT: align to the *full* df index so reindex(df.index) won't
+                    # drop everything to NA.
+                    sess_min = pd.Series(pd.NA, index=df.index, dtype="Float64")
 
                     def _calc(g: pd.DataFrame) -> pd.Series:
-                        stack: list[pd.Timestamp] = []
-                        out = pd.Series([pd.NA] * len(g), index=g.index, dtype="float")
+                        # Pair LICENSE_GRANT -> (RETURN|TIMEOUT|DETACHMENT) in order.
+                        # Store duration on the GRANT row (OUT semantic).
+                        open_grants: list[tuple[pd.Timestamp, int]] = []  # (ts, df_index)
+                        out = pd.Series(pd.NA, index=g.index, dtype="Float64")
                         for idx, r in g.iterrows():
                             act = r.get("_act")
                             ts = r.get("_ts")
                             if act in out_values:
-                                stack.append(ts)
-                            elif act in in_values and stack:
-                                start = stack.pop(0)
-                                if pd.notna(start) and pd.notna(ts) and ts >= start:
-                                    out.loc[idx] = (ts - start).total_seconds() / 60.0
+                                if pd.notna(ts):
+                                    open_grants.append((ts, idx))
+                            elif act in in_values and open_grants:
+                                start_ts, start_idx = open_grants.pop(0)
+                                if pd.notna(start_ts) and pd.notna(ts) and ts >= start_ts:
+                                    out.loc[start_idx] = (ts - start_ts).total_seconds() / 60.0
                         return out
 
                     if group_cols:
@@ -286,7 +344,7 @@ def parse_files(files: List[Path]) -> pd.DataFrame:
                     else:
                         sess_min.loc[sess_src.index] = _calc(sess_src)
 
-                    df["session_minutes"] = pd.to_numeric(sess_min.reindex(df.index), errors="coerce")
+                    df["session_minutes"] = pd.to_numeric(sess_min, errors="coerce")
                 else:
                     df["session_minutes"] = pd.NA
             else:
