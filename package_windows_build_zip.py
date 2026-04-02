@@ -144,7 +144,7 @@ def _iter_files_for_zip(repo_root: Path) -> list[tuple[Path, str]]:
 
 def create_zip(repo_root: Path) -> Path:
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_dir = repo_root / "Windows_EXE_Distribution" / "build_inputs"
+    out_dir = repo_root / "log_tool"
     out_dir.mkdir(parents=True, exist_ok=True)
     out_zip = out_dir / f"LogReportGenerator_WindowsBuildInputs_{ts}.zip"
 

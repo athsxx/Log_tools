@@ -2,3 +2,4 @@ questionary
 openpyxl
 pandas
 pytest
+pyinstaller

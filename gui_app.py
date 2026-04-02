@@ -34,7 +34,9 @@ try:
     from parsers.registry import registry, SoftwarePlugin, detect_file_type, sniff_file_content
     from reporting.excel_report import generate_report
     from reporting.critical_summary import build_critical_summary, format_summary_text
-except ModuleNotFoundError:  # pragma: no cover
+except ModuleNotFoundError as e:  # pragma: no cover
+    if e.name and not (e.name.startswith("parsers") or e.name.startswith("reporting")):
+        raise
     from log_tool.parsers import PARSER_MAP
     from log_tool.parsers.registry import registry, SoftwarePlugin, detect_file_type, sniff_file_content
     from log_tool.reporting.excel_report import generate_report

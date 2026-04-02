@@ -28,12 +28,15 @@ if exist "..\.venv\Scripts\activate.bat" (
     echo Make sure Python and dependencies are available.
 )
 
-REM 2. Ensure PyInstaller is installed
+REM 2. Ensure PyInstaller and dependencies are installed
 python -m PyInstaller --version >nul 2>&1
 if errorlevel 1 (
     echo Installing PyInstaller...
     pip install pyinstaller
 )
+
+echo Installing required Python packages...
+pip install -r requirements.txt
 
 echo.
 echo Building Windows executable...
