@@ -52,12 +52,14 @@ _MAGIC_SIGNATURES: Dict[str, list[tuple[bytes, str]]] = {
     "matlab":         [(b"cppmicroservices", "MATLAB ServiceHost"),
                        (b"MathWorksServiceHost", "MATLAB ServiceHost")],
     "ansys":          [(b"ansyslmcenter", "Ansys License Manager"),
+                       (b"ansyslmd", "Ansys Vendor Daemon"),
                        (b"The license manager", "Ansys License Manager")],
     "catia_token":    [(b"Token/Credit license usage trace", "CATIA Token Usage")],
 
     # Siemens NX / FlexNet debug logs
     # Typical lines have: OUT: "FEATURE" user@host
-    "nx":             [(b" OUT: \"", "FlexNet checkout (OUT)")],
+    "nx":             [(b"ugslmd", "Siemens NX Vendor Daemon"),
+                       (b" OUT: \"", "FlexNet checkout (OUT)")],
 }
 
 # Known binary/stat file signatures
@@ -628,7 +630,7 @@ def _register_builtins() -> None:
             filename_hints=["ansyslmcenter.log"],
             directory_hints=["ansys"],
             file_extensions=[".log"],
-            content_signatures=["The license manager"],
+            content_signatures=["ansyslmcenter", "ansyslmd", "The license manager"],
             parser_fn=parse_ansys,
             colour_theme=("1565C0", "42A5F5", "E3F2FD"),
             description="Ansys ansyslmcenter.log — license manager admin events",
@@ -717,7 +719,7 @@ def _register_builtins() -> None:
             filename_hints=["ugslmd", "ugslm", "saltd", "lmgrd"],
             directory_hints=["nx", "nx siemens"],
             file_extensions=[".log", ".txt"],
-            content_signatures=[" OUT: \"", " IN: \"", " DENIED: \"", "TIMESTAMP"],
+            content_signatures=["ugslmd", " OUT: \"", " IN: \"", " DENIED: \"", "TIMESTAMP"],
             parser_fn=parse_nx,
             colour_theme=("263238", "607D8B", "ECEFF1"),
             critical_metrics=[
