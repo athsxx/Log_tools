@@ -59,7 +59,7 @@ excludes = [
 
 
 a = Analysis(
-    ['main.py'],
+    ['cli.py'],
     pathex=[],
     binaries=binaries,
     datas=datas,
