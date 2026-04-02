@@ -45,8 +45,8 @@ import pandas as pd
 # Common log file magic bytes / signatures
 _MAGIC_SIGNATURES: Dict[str, list[tuple[bytes, str]]] = {
     # (byte_pattern, description)
-    "catia_license":  [(b"STARTSERVER", "CATIA LicenseServer"),
-                       (b"LICENSESERV", "CATIA LicenseServer")],
+    "catia_license":  [(b"LUM_DS", "CATIA LicenseServer"),
+                       (b"DSLS", "CATIA LicenseServer")],
     "cortona":        [(b"(pgraphics)", "Cortona RLM pgraphics")],
     "cortona_admin":  [(b"License Administrator", "Cortona Admin Server")],
     "matlab":         [(b"cppmicroservices", "MATLAB ServiceHost"),
@@ -583,7 +583,7 @@ def _register_builtins() -> None:
             filename_hints=["licenseserver"],
             directory_hints=["catia"],
             file_extensions=[".log"],
-            content_signatures=["STARTSERVER", "LICENSESERV"],
+            content_signatures=["LUM_DS", "DSLS"],
             parser_fn=parse_catia_license,
             colour_theme=("4A148C", "AB47BC", "F3E5F5"),
             critical_metrics=[
